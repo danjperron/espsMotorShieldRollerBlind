@@ -4,6 +4,10 @@
    Daniel Perron (c) April,2018
    version 1.01
 
+   June,2018
+   Retain MQTT blind status
+   Added OTA function 15 seconds on boot
+   Added MQTT STOP command to set/blind
 
    // motor shield connection are different from the reference
    // because the reference assumes that the L293 is directly linked to each input of the shield.
@@ -41,14 +45,16 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
-
+#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 
 //===== Wifi definition 
 
 
-const char* ssid     = "mySSID";
-const char* password = "myPASSWORD";
-const char* mqtt_server = "10.11.12.192";
+const char* ssid     = "";
+const char* password = "";
+const char* mqtt_server = "";
 const char* mqtt_user = "";
 const char* mqtt_password = "";
 
@@ -413,7 +419,7 @@ void   publishStatus()
       interrupts();
       ltemp = (stepRefresh *100) / config.totalStep;
       ltoa(ltemp,buffer,10);
-      client.publish(buildTopicName("status/blind").c_str(),buffer);
+      client.publish(buildTopicName("status/blind").c_str(),buffer,true);
       Serial.printf("Blind => position: %d step(s) %d%%\r\n",stepRefresh,ltemp);
     }
 }
@@ -478,6 +484,16 @@ void callback(char* topic, byte* payload, unsigned int length) {
   
   if(S_topic == buildTopicName("set/blind"))
   {
+    if(message=="STOP")
+    {
+      noInterrupts();
+      stepTarget=config.currentStep;
+      interrupts();
+      Serial.println("MQTT called blind stop");
+      updateEEpromFlag=true;
+    }
+    else
+    {
      ltemp = message.toInt();
     if((ltemp >= 0 ) && (ltemp < 101))
      if(config.totalStep > 0)
@@ -492,6 +508,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
        
      }
     return;
+    }
   }
   if(S_topic == buildTopicName("set/step"))
   {
@@ -614,14 +631,61 @@ void setup()
      stepperMoveFlag=false;
      updateEEpromFlag = false;
      lapsetime=millis();
-     
+
+  ArduinoOTA.setPassword("admin");
+
+  // Password can be set with it's md5 value as well
+  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH)
+      type = "sketch";
+    else // U_SPIFFS
+      type = "filesystem";
+
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    Serial.println("Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+  Serial.println("Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
 }    
 
 //=======================================================================
 //                MAIN LOOP
 //=======================================================================
+bool ota_flag = true;
+uint16_t time_elapsed = 0;
 void loop()
 {
+  if(ota_flag)
+  {
+    while(time_elapsed < 15000) // Look for OTA(15sec)
+    {
+     ArduinoOTA.handle();
+     time_elapsed = millis();
+     delay(10);
+    }
+    ota_flag = false;
+  }
    unsigned long deltatime;
    if (!client.connected()) {
     reconnect();
@@ -666,4 +730,3 @@ void loop()
   
 }
 //=======================================================================
-
